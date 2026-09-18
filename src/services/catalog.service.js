@@ -55,6 +55,58 @@ function isPrivateIp(ip) {
     return false;
 }
 
+function safeLookup(hostname, opts, callback) {
+    if (typeof opts === 'function') {
+        callback = opts;
+        opts = {};
+    }
+
+    const rawHostname = (hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+    if (
+        rawHostname.includes('internal-network') ||
+        rawHostname === 'localhost' ||
+        rawHostname.endsWith('.localhost') ||
+        rawHostname.endsWith('.local') ||
+        rawHostname.endsWith('.internal') ||
+        rawHostname.endsWith('.lan')
+    ) {
+        return callback(new Error("Forbidden access rule triggered."));
+    }
+
+    if (net.isIP(rawHostname)) {
+        if (isPrivateIp(rawHostname)) {
+            return callback(new Error("Forbidden access rule triggered."));
+        }
+        if (opts && opts.all) {
+            return callback(null, [{ address: rawHostname, family: net.isIPv4(rawHostname) ? 4 : 6 }]);
+        }
+        return callback(null, rawHostname, net.isIPv4(rawHostname) ? 4 : 6);
+    }
+
+    dns.lookup(hostname, opts, (err, ...args) => {
+        if (err) {
+            return callback(err);
+        }
+        if (opts && opts.all) {
+            const addresses = args[0];
+            if (Array.isArray(addresses)) {
+                for (const addr of addresses) {
+                    if (isPrivateIp(addr.address)) {
+                        return callback(new Error("Forbidden access rule triggered."));
+                    }
+                }
+            }
+            return callback(null, ...args);
+        } else {
+            const address = args[0];
+            if (isPrivateIp(address)) {
+                return callback(new Error("Forbidden access rule triggered."));
+            }
+            return callback(null, ...args);
+        }
+    });
+}
+
 function checkTarget(target, callback) {
     let parsedUrl;
     try {
@@ -110,7 +162,7 @@ exports.fetchRemoteAsset = (target, cb) => {
             return cb(err);
         }
         const client = parsedUrl.protocol === 'https:' ? https : http;
-        client.get(parsedUrl.href, (proxyRes) => {
+        client.get(parsedUrl, { lookup: safeLookup }, (proxyRes) => {
             let body = '';
             proxyRes.on('data', chunk => body += chunk);
             proxyRes.on('end', () => cb(null, body.substring(0, 50)));
